@@ -1,0 +1,46 @@
+{
+  "part_number": "DSPIC33CK32MP102",
+  "datasheet": "DS70005363E",
+  "packages": {
+    "28-pin SSOP": {
+      "source": "edc",
+      "pin_count": 28,
+      "note": "Default pinout from DFP EDC file, matches Table 2"
+    },
+    "28-pin UQFN": {
+      "source": "overlay",
+      "pin_count": 28,
+      "note": "From datasheet DS70005363E Table 3, page 5",
+      "pins": {
+        "1":  "RB14",
+        "2":  "RB15",
+        "3":  "MCLR",
+        "4":  "RA0",
+        "5":  "RA1",
+        "6":  "RA2",
+        "7":  "RA3",
+        "8":  "RA4",
+        "9":  "AVDD",
+        "10": "AVSS",
+        "11": "VDD",
+        "12": "VSS",
+        "13": "RB0",
+        "14": "RB1",
+        "15": "RB2",
+        "16": "RB3",
+        "17": "RB4",
+        "18": "RB5",
+        "19": "RB6",
+        "20": "RB7",
+        "21": "RB8",
+        "22": "RB9",
+        "23": "VSS_2",
+        "24": "VDD_2",
+        "25": "RB10",
+        "26": "RB11",
+        "27": "RB12",
+        "28": "RB13"
+      }
+    }
+  }
+}

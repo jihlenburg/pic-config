@@ -1,0 +1,476 @@
+"""
+C code generator for dsPIC33 PPS pin configuration.
+
+Generates pin_config.h (prototypes, defines, signal macros) and pin_config.c
+(implementation) for PPS-remappable and fixed-function pin assignments.
+Outputs MISRA C:2012 compliant C99 code.
+"""
+
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+from parser.edc_parser import DeviceData
+from codegen.oscillator import OscConfig, generate_osc_code
+from codegen.fuses import FuseConfig, generate_fuse_pragmas
+
+
+# Regex for identifying ICSP/debug pins — controlled by the debug module, not user code
+_ICSP_RE = re.compile(r"^MCLR$|^PGC\d$|^PGD\d$|^PGEC\d$|^PGED\d$")
+
+
+@dataclass
+class PinAssignment:
+    """A single pin-to-peripheral assignment."""
+    pin_position: int
+    rp_number: Optional[int] = None
+    peripheral: str = ""
+    direction: str = "in"  # "in", "out", or "io"
+    ppsval: Optional[int] = None
+    fixed: bool = False
+
+
+@dataclass
+class PinConfig:
+    """Complete pin configuration for a device."""
+    part_number: str
+    assignments: list[PinAssignment] = field(default_factory=list)
+    digital_pins: list[int] = field(default_factory=list)
+
+
+# PPS register unlock/lock values (RPCON)
+_PPS_UNLOCK = "0x0000U"
+_PPS_LOCK = "0x0800U"
+
+# Minimum column for aligned inline comments (from start of line)
+_COMMENT_COL = 40
+
+
+def _align_comments(lines: list[str]) -> list[str]:
+    """Align inline comments in a block of C statements to a consistent column.
+
+    Splits each line at the first '/*' that follows code, pads with spaces so
+    all comments start at the same column. Lines without inline comments or
+    lines that are pure comments are passed through unchanged.
+    """
+    # Parse lines into (code, comment) pairs
+    parsed = []
+    for line in lines:
+        # Only align lines that have code followed by a comment
+        stripped = line.lstrip()
+        if stripped.startswith("/*") or stripped.startswith("*") or "/*" not in line:
+            parsed.append((line, None))
+            continue
+        # Find the comment after code (skip string literals — not relevant for generated code)
+        idx = line.index("/*")
+        code_part = line[:idx].rstrip()
+        comment_part = line[idx:]
+        parsed.append((code_part, comment_part))
+
+    # Find the longest code part to determine alignment column
+    max_code_len = _COMMENT_COL
+    for code, comment in parsed:
+        if comment is not None:
+            max_code_len = max(max_code_len, len(code) + 2)  # +2 for minimum gap
+
+    # Rebuild lines with aligned comments
+    result = []
+    for code, comment in parsed:
+        if comment is None:
+            result.append(code)
+        else:
+            padding = max_code_len - len(code)
+            result.append(code + " " * padding + comment)
+    return result
+
+
+def generate_c_files(device: DeviceData, config: PinConfig, package: Optional[str] = None,
+                     signal_names: Optional[dict[int, str]] = None,
+                     osc_config: Optional[OscConfig] = None,
+                     fuse_config: Optional[FuseConfig] = None) -> dict[str, str]:
+    """Generate split pin_config.h and pin_config.c files.
+
+    Returns a dict with keys "pin_config.h" and "pin_config.c".
+    The header contains include guard, prototypes, and signal name defines.
+    The source contains pragmas, function implementations, and system_init().
+    """
+    pinout = device.get_pinout(package)
+    resolved = device.resolve_pins(package)
+    pin_by_pos = {p["position"]: p for p in resolved}
+    sig = signal_names or {}
+
+    pps_assignments = [a for a in config.assignments if not a.fixed]
+    fixed_assignments = [a for a in config.assignments if a.fixed]
+
+    input_field_map = {m.field_name: m for m in device.pps_input_mappings}
+    output_rp_map = {m.rp_number: m for m in device.pps_output_mappings}
+
+    def _port_label(rp_num: int) -> str:
+        """Resolve an RP number to its port label (e.g. RB3)."""
+        for p in resolved:
+            if p["rp_number"] == rp_num and p["port"]:
+                return f"R{p['port']}{p['port_bit']}"
+        return f"RP{rp_num}"
+
+    # --- Determine what functions are needed ---
+    has_pps = bool([a for a in pps_assignments if a.direction in ("in", "out")])
+    has_opamp = any(
+        re.match(r"^OA(\d+)(OUT|IN[+-]?)$", a.peripheral)
+        for a in fixed_assignments
+    )
+
+    osc_pragmas = ""
+    osc_init = ""
+    if osc_config is not None:
+        osc_pragmas, osc_init = generate_osc_code(osc_config)
+
+    # =========================================================================
+    # Generate pin_config.h
+    # =========================================================================
+    h_lines = []
+    h_lines.append("/**")
+    h_lines.append(f" * @file   pin_config.h")
+    h_lines.append(f" * @brief  Pin configuration header for {device.part_number} ({pinout.package})")
+    h_lines.append(f" *")
+    h_lines.append(f" * @note   Generated by config-pic. MISRA C:2012 compliant.")
+    h_lines.append(f" */")
+    h_lines.append("")
+    h_lines.append("#ifndef PIN_CONFIG_H")
+    h_lines.append("#define PIN_CONFIG_H")
+    h_lines.append("")
+    h_lines.append("#include <xc.h>")
+    h_lines.append("")
+
+    # Signal name defines
+    if sig:
+        h_lines.append("/* ---------------------------------------------------------------------------")
+        h_lines.append(" * Signal name aliases")
+        h_lines.append(" * Maps user-defined signal names to PORT/LAT/TRIS bit-fields.")
+        h_lines.append(" * -------------------------------------------------------------------------*/")
+        for assign in config.assignments:
+            name = sig.get(assign.pin_position)
+            if not name:
+                continue
+            pin = pin_by_pos.get(assign.pin_position)
+            if pin and pin["port"]:
+                safe_name = re.sub(r"[^A-Za-z0-9_]", "_", name).upper()
+                port = pin["port"]
+                bit = pin["port_bit"]
+                h_lines.append(f"#define {safe_name}_PORT  (PORT{port}bits.R{port}{bit})")
+                h_lines.append(f"#define {safe_name}_LAT   (LAT{port}bits.LAT{port}{bit})")
+                h_lines.append(f"#define {safe_name}_TRIS  (TRIS{port}bits.TRIS{port}{bit})")
+        h_lines.append("")
+
+    # Function prototypes
+    h_lines.append("/* Function prototypes */")
+    if osc_init:
+        h_lines.append("void configure_oscillator(void);")
+    if has_pps:
+        h_lines.append("void configure_pps(void);")
+    h_lines.append("void configure_ports(void);")
+    if has_opamp:
+        h_lines.append("void configure_analog(void);")
+    h_lines.append("void system_init(void);")
+    h_lines.append("")
+
+    h_lines.append("#endif /* PIN_CONFIG_H */")
+    h_lines.append("")
+
+    # =========================================================================
+    # Generate pin_config.c
+    # =========================================================================
+    c_lines = []
+
+    # File header
+    c_lines.append("/**")
+    c_lines.append(f" * @file   pin_config.c")
+    c_lines.append(f" * @brief  Pin configuration for {device.part_number} ({pinout.package})")
+    c_lines.append(f" *")
+    c_lines.append(f" * Configures PPS remappable pin mappings, analog/digital selection,")
+    c_lines.append(f" * and pin direction (TRIS) registers.")
+    c_lines.append(f" *")
+    c_lines.append(f" * @note   Generated by config-pic. MISRA C:2012 compliant.")
+    c_lines.append(f" */")
+    c_lines.append("")
+    c_lines.append('#include "pin_config.h"')
+    c_lines.append("")
+
+    # Oscillator pragmas (align inline comments)
+    if osc_pragmas:
+        c_lines.extend(_align_comments(osc_pragmas.splitlines()))
+        c_lines.append("")
+
+    # Configuration fuse pragmas (align inline comments per section)
+    if fuse_config is not None:
+        fuse_pragmas = generate_fuse_pragmas(fuse_config)
+        if fuse_pragmas:
+            # Align each fuse section separately (sections separated by blank lines)
+            sections: list[list[str]] = [[]]
+            for line in fuse_pragmas.splitlines():
+                if line == "":
+                    sections.append([])
+                else:
+                    sections[-1].append(line)
+            for i, section in enumerate(sections):
+                if section:
+                    c_lines.extend(_align_comments(section))
+                if i < len(sections) - 1:
+                    c_lines.append("")
+            c_lines.append("")
+
+    # Oscillator init function
+    if osc_init:
+        c_lines.append(osc_init)
+
+    # --- PPS configuration ---
+    pps_in = [a for a in pps_assignments if a.direction == "in"]
+    pps_out = [a for a in pps_assignments if a.direction == "out"]
+
+    if pps_in or pps_out:
+        c_lines.append("/* ---------------------------------------------------------------------------")
+        c_lines.append(" * configure_pps")
+        c_lines.append(" *")
+        c_lines.append(" * Configures Peripheral Pin Select (PPS) input and output mappings.")
+        c_lines.append(" * The RPCON register is unlocked before writing and locked after.")
+        c_lines.append(" * -------------------------------------------------------------------------*/")
+        c_lines.append("void configure_pps(void)")
+        c_lines.append("{")
+        c_lines.append(f"    /* Unlock PPS registers (clear IOLOCK bit in RPCON) */")
+        c_lines.append(f"    __builtin_write_RPCON({_PPS_UNLOCK});")
+        c_lines.append("")
+
+        if pps_in:
+            c_lines.append("    /* --- PPS Input Mappings ---")
+            c_lines.append("     * Each RPINRx register field selects which RP pin drives")
+            c_lines.append("     * the corresponding peripheral input. */")
+            pps_in_lines = []
+            for assign in pps_in:
+                field_name = None
+                for candidate in [assign.peripheral + "R", assign.peripheral]:
+                    if candidate in input_field_map:
+                        field_name = candidate
+                        break
+                sig_label = f" [{sig[assign.pin_position]}]" if assign.pin_position in sig else ""
+                if field_name:
+                    m = input_field_map[field_name]
+                    port_label = _port_label(assign.rp_number)
+                    pps_in_lines.append(
+                        f"    {m.register}bits.{m.field_name} = {assign.rp_number}U;"
+                        f"  /* {assign.peripheral} <- RP{assign.rp_number}/{port_label}{sig_label} */")
+                else:
+                    pps_in_lines.append(f"    /* WARNING: no RPINR mapping found for {assign.peripheral} */")
+            c_lines.extend(_align_comments(pps_in_lines))
+            c_lines.append("")
+
+        if pps_out:
+            c_lines.append("    /* --- PPS Output Mappings ---")
+            c_lines.append("     * Each RPORx register field selects which peripheral output")
+            c_lines.append("     * drives the corresponding RP pin. */")
+            pps_out_lines = []
+            for assign in pps_out:
+                sig_label = f" [{sig[assign.pin_position]}]" if assign.pin_position in sig else ""
+                m = output_rp_map.get(assign.rp_number)
+                if m and assign.ppsval is not None:
+                    port_label = _port_label(assign.rp_number)
+                    pps_out_lines.append(
+                        f"    {m.register}bits.{m.field_name} = {assign.ppsval}U;"
+                        f"  /* RP{assign.rp_number}/{port_label} -> {assign.peripheral}{sig_label} */")
+                else:
+                    pps_out_lines.append(f"    /* WARNING: no RPOR mapping found for RP{assign.rp_number} */")
+            c_lines.extend(_align_comments(pps_out_lines))
+            c_lines.append("")
+
+        c_lines.append(f"    /* Lock PPS registers (set IOLOCK bit in RPCON) */")
+        c_lines.append(f"    __builtin_write_RPCON({_PPS_LOCK});")
+        c_lines.append("}")
+        c_lines.append("")
+
+    # --- Port and peripheral configuration ---
+    c_lines.append("/* ---------------------------------------------------------------------------")
+    c_lines.append(" * configure_ports")
+    c_lines.append(" *")
+    c_lines.append(" * Configures ANSELx (analog/digital), and TRISx (direction) registers")
+    c_lines.append(" * for all assigned pins.")
+    c_lines.append(" * -------------------------------------------------------------------------*/")
+    c_lines.append("void configure_ports(void)")
+    c_lines.append("{")
+
+    # Collect port bits, separating ICSP pins
+    port_config: dict[tuple[str, int], dict] = {}
+    icsp_pins: list[tuple[str, int, str]] = []
+
+    for assign in config.assignments:
+        pin = pin_by_pos.get(assign.pin_position)
+        if not pin or not pin["port"]:
+            continue
+        if _ICSP_RE.match(assign.peripheral):
+            icsp_pins.append((pin["port"], pin["port_bit"], assign.peripheral))
+            continue
+        key = (pin["port"], pin["port_bit"])
+        port_config[key] = {
+            "peripheral": assign.peripheral,
+            "direction": assign.direction,
+            "fixed": assign.fixed,
+        }
+
+    for pos in config.digital_pins:
+        pin = pin_by_pos.get(pos)
+        if pin and pin["port"]:
+            key = (pin["port"], pin["port_bit"])
+            if key not in port_config:
+                port_config[key] = {"peripheral": "GPIO", "direction": "in", "fixed": True}
+
+    if icsp_pins:
+        c_lines.append("    /* ICSP/debug pins — directly controlled by the debug module (FICD.ICS) */")
+        for (port, bit, periph) in sorted(icsp_pins):
+            c_lines.append(f"    /* R{port}{bit} reserved for {periph} — no ANSEL/TRIS configuration needed */")
+        c_lines.append("")
+
+    if port_config:
+        # ANSEL: determine analog vs digital
+        analog_pins = set()
+        digital_pins = set()
+        for key, cfg in sorted(port_config.items()):
+            periph = cfg["peripheral"]
+            if re.match(r"^AN[A-Z]?\d+$", periph):
+                analog_pins.add(key)
+            else:
+                digital_pins.add(key)
+
+        def _has_ansel_bit(port: str, bit: int) -> bool:
+            """Check if this port/bit actually has an ANSEL bit field."""
+            return bit in device.ansel_bits.get(port, [])
+
+        if digital_pins:
+            c_lines.append("    /* Disable analog function on digital pins (0 = digital mode) */")
+            for (port, bit) in sorted(digital_pins):
+                if _has_ansel_bit(port, bit):
+                    c_lines.append(f"    ANSEL{port}bits.ANSEL{port}{bit} = 0U;")
+            c_lines.append("")
+
+        if analog_pins:
+            c_lines.append("    /* Enable analog function on analog pins (1 = analog mode) */")
+            for (port, bit) in sorted(analog_pins):
+                if _has_ansel_bit(port, bit):
+                    c_lines.append(f"    ANSEL{port}bits.ANSEL{port}{bit} = 1U;")
+            c_lines.append("")
+
+        # TRIS direction registers
+        c_lines.append("    /* Configure pin direction: TRISx (0 = output, 1 = input) */")
+        tris_lines = []
+        for (port, bit), cfg in sorted(port_config.items()):
+            tris_reg = f"TRIS{port}"
+            if tris_reg not in device.port_registers:
+                continue
+            periph = cfg["peripheral"]
+            direction = cfg["direction"]
+
+            if direction == "out":
+                tris_val = 0
+            elif direction == "io":
+                tris_val = 1
+                tris_lines.append(f"    {tris_reg}bits.TRIS{port}{bit} = {tris_val}U;"
+                                  f"  /* R{port}{bit} = in/out (modify direction as needed) */")
+                continue
+            else:
+                tris_val = 1
+
+            tris_lines.append(f"    {tris_reg}bits.TRIS{port}{bit} = {tris_val}U;"
+                              f"  /* {periph} ({direction}) */")
+        c_lines.extend(_align_comments(tris_lines))
+
+    c_lines.append("}")
+    c_lines.append("")
+
+    # --- Op-amp enables ---
+    opamp_enables = []
+    for assign in fixed_assignments:
+        periph = assign.peripheral
+        if re.match(r"^OA(\d+)(OUT|IN[+-]?)$", periph):
+            m = re.match(r"^OA(\d+)", periph)
+            if m:
+                opamp_enables.append(int(m.group(1)))
+
+    if opamp_enables:
+        c_lines.append("/* ---------------------------------------------------------------------------")
+        c_lines.append(" * configure_analog")
+        c_lines.append(" *")
+        c_lines.append(" * Enables on-chip op-amp modules. Gain and mode settings should be")
+        c_lines.append(" * configured separately according to the application requirements.")
+        c_lines.append(" * -------------------------------------------------------------------------*/")
+        c_lines.append("void configure_analog(void)")
+        c_lines.append("{")
+        opamp_lines = []
+        for oa_num in sorted(set(opamp_enables)):
+            opamp_lines.append(f"    AMP{oa_num}CONbits.AMPEN = 1U;"
+                               f"  /* Enable Op-Amp {oa_num} */")
+        c_lines.extend(_align_comments(opamp_lines))
+        c_lines.append("}")
+        c_lines.append("")
+
+    # --- system_init() — master initialization in correct order ---
+    c_lines.append("/* ---------------------------------------------------------------------------")
+    c_lines.append(" * system_init")
+    c_lines.append(" *")
+    c_lines.append(" * Master initialization function. Calls all configuration routines in the")
+    c_lines.append(" * correct order: oscillator first (clock must be stable), then PPS (requires")
+    c_lines.append(" * unlock/lock), then port direction/analog, then peripheral enables.")
+    c_lines.append(" * -------------------------------------------------------------------------*/")
+    c_lines.append("void system_init(void)")
+    c_lines.append("{")
+    if osc_init:
+        c_lines.append("    configure_oscillator();")
+    if has_pps:
+        c_lines.append("    configure_pps();")
+    c_lines.append("    configure_ports();")
+    if has_opamp:
+        c_lines.append("    configure_analog();")
+    c_lines.append("}")
+    c_lines.append("")
+
+    # End of file marker
+    c_lines.append("/* End of pin_config.c */")
+    c_lines.append("")
+
+    return {
+        "pin_config.h": "\n".join(h_lines),
+        "pin_config.c": "\n".join(c_lines),
+    }
+
+
+def generate_c_code(device: DeviceData, config: PinConfig, package: Optional[str] = None,
+                    signal_names: Optional[dict[int, str]] = None,
+                    osc_config: Optional[OscConfig] = None,
+                    fuse_config: Optional[FuseConfig] = None) -> str:
+    """Generate a single self-contained C file (backward-compatible).
+
+    Used by the compile-check path which needs a single compilable file.
+    Delegates to generate_c_files() and concatenates the result.
+    """
+    files = generate_c_files(device, config, package, signal_names, osc_config, fuse_config)
+    # For single-file output, merge: use the .c file but replace #include "pin_config.h"
+    # with #include <xc.h> and prepend the defines from the header
+    h_content = files["pin_config.h"]
+    c_content = files["pin_config.c"]
+
+    # Extract defines from header (everything between #include <xc.h> and prototypes)
+    defines = []
+    in_defines = False
+    for line in h_content.splitlines():
+        if line.startswith("#define ") and "_PORT" in line or "_LAT" in line or "_TRIS" in line:
+            defines.append(line)
+        if line.startswith("/* ---") and "Signal name" in line:
+            in_defines = True
+        if in_defines:
+            defines.append(line)
+            if line == "":
+                in_defines = False
+
+    # Replace #include "pin_config.h" with #include <xc.h> and inline the defines
+    merged = c_content.replace('#include "pin_config.h"', "#include <xc.h>")
+
+    # Insert defines after the #include <xc.h> line
+    if defines:
+        define_block = "\n".join(defines)
+        merged = merged.replace("#include <xc.h>\n", f"#include <xc.h>\n\n{define_block}\n")
+
+    return merged

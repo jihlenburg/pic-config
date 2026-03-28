@@ -1,0 +1,11 @@
+{
+  "part_number": "DSPIC33CK64MP103",
+  "datasheet": "DS70005363E",
+  "packages": {
+    "36-pin UQFN": {
+      "source": "edc",
+      "pin_count": 36,
+      "note": "Default pinout from DFP EDC file, matches Table 4"
+    }
+  }
+}
