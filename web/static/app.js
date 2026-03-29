@@ -578,6 +578,9 @@ function isQfnPackage() {
     return /QFN|QFP|TQFP/i.test(deviceData.selected_package);
 }
 
+const DIP_LANDSCAPE_HEIGHT_RATIO = 0.30;
+const DIP_LANDSCAPE_MAX_WIDTH_RATIO = 1.50;
+
 /** Render the package diagram into the container, choosing DIP or QFN layout. */
 function renderPackageDiagram() {
     const container = document.getElementById('pkg-container');
@@ -588,6 +591,119 @@ function renderPackageDiagram() {
     } else {
         renderDipDiagram(container);
     }
+}
+
+/**
+ * Build a DIP/SSOP-style package diagram in portrait or landscape orientation.
+ * Portrait uses left/right pin rails; landscape uses top/bottom pin rails.
+ * @param {'portrait'|'landscape'} orientation
+ * @returns {HTMLElement}
+ */
+function buildDipDiagram(orientation) {
+    const pins = deviceData.pins;
+    const half = Math.ceil(pins.length / 2);
+    const leftPins = pins.slice(0, half);
+    const rightPins = pins.slice(half).reverse();
+
+    const diagram = document.createElement('div');
+    diagram.className = 'pkg-diagram pkg-diagram-dip';
+    diagram.dataset.orientation = orientation;
+
+    const shell = document.createElement('div');
+    shell.className = `dip-shell dip-shell-${orientation}`;
+
+    const chip = document.createElement('div');
+    chip.className = `chip-body chip-dip chip-dip-${orientation}`;
+
+    const notch = document.createElement('div');
+    notch.className = 'notch';
+    chip.appendChild(notch);
+
+    const label = document.createElement('div');
+    label.className = 'chip-label';
+    label.textContent = `${deviceData.part_number}`;
+
+    const sublabel = document.createElement('div');
+    sublabel.className = 'chip-sublabel';
+    sublabel.textContent = deviceData.selected_package;
+
+    const center = document.createElement('div');
+    center.className = 'chip-center';
+    center.appendChild(label);
+    center.appendChild(sublabel);
+    chip.appendChild(center);
+
+    if (orientation === 'landscape') {
+        const topPins = rightPins;
+        const bottomPins = leftPins;
+
+        const topStrip = document.createElement('div');
+        topStrip.className = 'pin-strip pin-strip-top';
+        for (const pin of topPins) {
+            topStrip.appendChild(makePinEl(pin, 'top'));
+        }
+
+        const bottomStrip = document.createElement('div');
+        bottomStrip.className = 'pin-strip pin-strip-bottom';
+        for (const pin of bottomPins) {
+            bottomStrip.appendChild(makePinEl(pin, 'bottom'));
+        }
+
+        shell.appendChild(topStrip);
+        shell.appendChild(chip);
+        shell.appendChild(bottomStrip);
+    } else {
+        const leftRail = document.createElement('div');
+        leftRail.className = 'pin-column pin-column-left';
+        for (const pin of leftPins) {
+            leftRail.appendChild(makePinEl(pin, 'left'));
+        }
+
+        const rightRail = document.createElement('div');
+        rightRail.className = 'pin-column pin-column-right';
+        for (const pin of rightPins) {
+            rightRail.appendChild(makePinEl(pin, 'right'));
+        }
+
+        shell.appendChild(leftRail);
+        shell.appendChild(chip);
+        shell.appendChild(rightRail);
+    }
+
+    diagram.appendChild(shell);
+    return diagram;
+}
+
+/**
+ * Choose the DIP/SSOP orientation based on rendered height, with a width guard.
+ * Rotates to landscape once the portrait diagram consumes too much vertical space.
+ * @param {HTMLElement} container
+ * @param {HTMLElement} portraitDiagram
+ * @returns {HTMLElement|null}
+ */
+function buildLandscapeDipIfNeeded(container, portraitDiagram) {
+    const panel = container.closest('.panel-left');
+    if (!panel || !panel.clientHeight) return null;
+
+    if (portraitDiagram.offsetHeight <= panel.clientHeight * DIP_LANDSCAPE_HEIGHT_RATIO) {
+        return null;
+    }
+
+    const landscapeDiagram = buildDipDiagram('landscape');
+    landscapeDiagram.classList.add('pkg-diagram-measure');
+    document.body.appendChild(landscapeDiagram);
+
+    const availableWidth =
+        container.clientWidth ||
+        container.parentElement?.clientWidth ||
+        panel.clientWidth;
+    const fitsWidth = !availableWidth ||
+        landscapeDiagram.offsetWidth <= availableWidth * DIP_LANDSCAPE_MAX_WIDTH_RATIO;
+
+    landscapeDiagram.remove();
+    landscapeDiagram.classList.remove('pkg-diagram-measure');
+
+    return fitsWidth ? landscapeDiagram : null;
 }
 
 /**
@@ -635,44 +751,13 @@ function makePinEl(pin, side) {
 
 /** Render a DIP/SSOP-style package diagram (two rows of pins facing each other). */
 function renderDipDiagram(container) {
-    const pins = deviceData.pins;
-    const half = Math.ceil(pins.length / 2);
-    const leftPins = pins.slice(0, half);
-    const rightPins = pins.slice(half).reverse();
+    const portraitDiagram = buildDipDiagram('portrait');
+    container.appendChild(portraitDiagram);
 
-    const diagram = document.createElement('div');
-    diagram.className = 'pkg-diagram';
-
-    const chip = document.createElement('div');
-    chip.className = 'chip-body chip-dip';
-
-    const notch = document.createElement('div');
-    notch.className = 'notch';
-    chip.appendChild(notch);
-
-    const label = document.createElement('div');
-    label.className = 'chip-label';
-    label.textContent = `${deviceData.part_number}`;
-    chip.appendChild(label);
-
-    const sublabel = document.createElement('div');
-    sublabel.className = 'chip-sublabel';
-    sublabel.textContent = deviceData.selected_package;
-    chip.appendChild(sublabel);
-
-    const maxRows = Math.max(leftPins.length, rightPins.length);
-    for (let i = 0; i < maxRows; i++) {
-        const row = document.createElement('div');
-        row.className = 'pin-row-diagram';
-        if (leftPins[i]) row.appendChild(makePinEl(leftPins[i], 'left'));
-        else row.appendChild(document.createElement('div'));
-        if (rightPins[i]) row.appendChild(makePinEl(rightPins[i], 'right'));
-        else row.appendChild(document.createElement('div'));
-        chip.appendChild(row);
+    const landscapeDiagram = buildLandscapeDipIfNeeded(container, portraitDiagram);
+    if (landscapeDiagram) {
+        container.replaceChildren(landscapeDiagram);
     }
-
-    diagram.appendChild(chip);
-    container.appendChild(diagram);
 }
 
 /** Render a QFN/QFP/TQFP-style package diagram (pins on all four sides). */
@@ -1217,6 +1302,16 @@ document.getElementById('part-input').addEventListener('keydown', (e) => {
 });
 document.getElementById('pkg-select').addEventListener('change', (e) => {
     loadDevice(e.target.value);
+});
+
+let packageResizeFrame = 0;
+window.addEventListener('resize', () => {
+    if (!deviceData) return;
+    cancelAnimationFrame(packageResizeFrame);
+    packageResizeFrame = requestAnimationFrame(() => {
+        renderPackageDiagram();
+        checkConflicts();
+    });
 });
 
 // Code tab switching

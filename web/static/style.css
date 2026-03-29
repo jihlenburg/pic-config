@@ -482,6 +482,14 @@ header h1 {
     margin-bottom: 16px;
 }
 
+.pkg-diagram-measure {
+    position: absolute !important;
+    left: -10000px !important;
+    top: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
 .chip-label {
     text-align: center;
     font-size: 10px;
@@ -538,16 +546,38 @@ header h1 {
 .pkg-pin-num { font-size: 9px; color: var(--text-dim); }
 
 /* DIP/SSOP layout */
+.dip-shell {
+    display: flex;
+}
+
+.dip-shell-portrait {
+    align-items: stretch;
+    gap: 8px;
+}
+
+.dip-shell-landscape {
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+
 .chip-dip {
     background: var(--bg-card);
     border: 2px solid var(--border);
     border-radius: 4px;
-    padding: 8px 10px;
     position: relative;
-    min-width: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
-.chip-dip .notch {
+.chip-dip-portrait {
+    padding: 12px 18px;
+    min-width: 110px;
+    min-height: 72px;
+}
+
+.chip-dip-portrait .notch {
     position: absolute;
     top: -2px;
     left: 50%;
@@ -560,11 +590,74 @@ header h1 {
     border-top: none;
 }
 
+.chip-dip-landscape {
+    padding: 10px 12px 10px 18px;
+    min-width: 170px;
+    min-height: 64px;
+}
+
+.chip-dip-landscape .notch {
+    position: absolute;
+    top: 50%;
+    left: -2px;
+    transform: translateY(-50%);
+    width: 10px;
+    height: 20px;
+    border-radius: 0 10px 10px 0;
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-left: none;
+}
+
+.pin-column {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 2px;
+    padding: 4px 0;
+}
+
+.pin-column-left {
+    align-items: flex-end;
+}
+
+.pin-column-right {
+    align-items: flex-start;
+}
+
 .pin-row-diagram {
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: 1px 0;
+}
+
+.pin-strip {
+    display: flex;
+    justify-content: space-between;
+    gap: 2px;
+    width: 100%;
+}
+
+.chip-center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    text-align: center;
+}
+
+.chip-dip-landscape .pkg-pin-top,
+.chip-dip-landscape .pkg-pin-bottom {
+    align-items: center;
+    flex: 1 1 0;
+    min-width: 12px;
+}
+
+.chip-dip-portrait .pkg-pin-left,
+.chip-dip-portrait .pkg-pin-right {
+    min-height: 12px;
 }
 
 /* QFN/QFP layout */
