@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from parser.edc_parser import parse_edc_file, DeviceData, Pinout, Pad
+from parser.pack_index import lookup_device_pack, download_atpack, list_all_devices as _list_all_index_devices
 
 DSPIC33_FAMILIES = {
     "dsPIC33CK-MP": r"DSPIC33CK\d+MP\d+",
@@ -155,7 +156,7 @@ def save_cached_device(device: DeviceData) -> Path:
 
 
 def list_cached_devices() -> list[str]:
-    """List all known devices from cached JSONs, EDC files, and pinout overlays."""
+    """List devices that are already cached locally (fast, no network)."""
     names: set[str] = set()
     DEVICES_DIR.mkdir(exist_ok=True)
     for p in DEVICES_DIR.glob("*.json"):
@@ -170,12 +171,23 @@ def list_cached_devices() -> list[str]:
     return sorted(names)
 
 
+def list_all_known_devices() -> list[str]:
+    """List all devices: locally cached + full pack index catalog."""
+    local = set(list_cached_devices())
+    try:
+        remote = set(_list_all_index_devices())
+    except Exception:
+        remote = set()
+    return sorted(local | remote)
+
+
 def load_device(part_number: str) -> Optional[DeviceData]:
     """
     Load device data:
     1. Check local cache (devices/*.json)
-    2. Parse from DFP atpack
-    3. Merge pinout overlays from pinouts/ directory
+    2. Find DFP atpack locally
+    3. Auto-download from Microchip pack repository if needed
+    4. Merge pinout overlays from pinouts/ directory
     """
     part_upper = part_number.upper()
 
@@ -185,10 +197,21 @@ def load_device(part_number: str) -> Optional[DeviceData]:
         _load_pinout_overlays(cached)
         return cached
 
-    # 2. Find and parse from DFP
+    # 2. Find and parse from DFP (local search first)
     found = _find_atpack_for_part(part_upper)
+
+    # 3. Auto-download from Microchip pack repository if not found locally
     if found is None:
-        return None
+        pack_info = lookup_device_pack(part_upper)
+        if pack_info:
+            url, filename = pack_info
+            try:
+                found = download_atpack(url, filename)
+            except Exception as e:
+                print(f"Failed to download DFP for {part_upper}: {e}")
+                return None
+        else:
+            return None
 
     pic_path = None
     if found.suffix == ".PIC":
@@ -202,7 +225,7 @@ def load_device(part_number: str) -> Optional[DeviceData]:
     device = parse_edc_file(str(pic_path))
     save_cached_device(device)
 
-    # 3. Load overlays
+    # 4. Load overlays
     _load_pinout_overlays(device)
 
     return device

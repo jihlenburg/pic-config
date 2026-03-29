@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>config-pic — Pin Configurator</title>
-    <link rel="stylesheet" href="/static/style.css?v=4">
+    <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
     <header>
@@ -14,10 +14,13 @@
         <button id="load-btn">Load Device</button>
         <select id="pkg-select" style="display:none">
         </select>
+        <button id="verify-btn" class="verify-btn" style="display:none" title="Cross-check pinout against datasheet PDF using Claude">Verify Pinout</button>
         <span id="status"></span>
         <button id="save-btn" style="display:none">Save</button>
         <button id="load-btn-file">Load</button>
         <input type="file" id="load-file-input" accept=".json" style="display:none">
+        <span id="index-badge" class="index-badge" style="display:none" onclick="refreshIndex()" title="Click to refresh"></span>
+        <button id="theme-toggle">Light</button>
     </header>
 
     <div class="main">
@@ -167,10 +170,14 @@
                 <button class="code-tab" data-file="pin_config.h">pin_config.h</button>
             </div>
             <pre id="code-output">Load a device and assign peripherals to generate code.</pre>
+            <div id="verify-panel" class="verify-panel" style="display:none">
+                <h2>Pinout Verification</h2>
+                <div id="verify-output"></div>
+            </div>
         </div>
     </div>
 
     <script src="/static/pin_descriptions.js"></script>
-    <script src="/static/app.js?v=4"></script>
+    <script src="/static/app.js?v=8"></script>
 </body>
 </html>

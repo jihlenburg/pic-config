@@ -1,18 +1,21 @@
 /*
  * config-pic — Pin Configurator Stylesheet
  *
- * Dark theme with peripheral-specific color coding.
+ * Supports dark and light themes via [data-theme] on <html>.
  * Layout: two-panel grid (pin table left, code output right).
  * Package diagrams: DIP/SSOP (vertical) and QFN/QFP (four-sided grid).
  *
  * Color conventions:
- *   --accent  (#e94560): primary actions, conflicts, pin numbers
- *   --accent2 (#00adb5): secondary actions, assigned pins, focus states
+ *   --accent  : primary actions, conflicts, pin numbers
+ *   --accent2 : secondary actions, assigned pins, focus states
  *   --uart/spi/i2c/pwm/etc: peripheral type color coding
- *   #f0c040: ICSP/debug pin highlighting
+ *   --icsp    : ICSP/debug pin highlighting
+ *   --code-bg : code output background
+ *   --code-fg : code output text
  */
 
-:root {
+:root,
+[data-theme="dark"] {
     --bg: #1a1a2e;
     --bg-card: #16213e;
     --bg-pin: #0f3460;
@@ -31,6 +34,53 @@
     --adc: #b37feb;
     --cmp: #e6a23c;
     --other: #00adb5;
+    --icsp: #f0c040;
+    --code-bg: #0d1117;
+    --code-fg: #c9d1d9;
+    --hover-overlay: rgba(255,255,255,0.03);
+    --conflict-bg: rgba(233,69,96,0.08);
+    --conflict-flash: rgba(233,69,96,0.6);
+    --conflict-bg2: rgba(233,69,96,0.3);
+    --conflict-border: rgba(233,69,96,0.15);
+    --assigned-overlay: rgba(0,173,181,0.2);
+    --rp-bg: rgba(0,173,181,0.15);
+    --analog-bg: rgba(179,127,235,0.15);
+    --icsp-bg: rgba(240,192,64,0.15);
+    --success-bg: rgba(103,194,58,0.15);
+}
+
+[data-theme="light"] {
+    --bg: #f5f6f8;
+    --bg-card: #ffffff;
+    --bg-pin: #e8edf4;
+    --bg-pin-power: #fde8e8;
+    --bg-pin-assigned: #e6f7ed;
+    --text: #1a1a2e;
+    --text-dim: #6b7280;
+    --accent: #d6336c;
+    --accent2: #0891b2;
+    --border: #d1d5db;
+    --uart: #c2790e;
+    --spi: #3d8b2b;
+    --i2c: #2563eb;
+    --pwm: #dc2626;
+    --timer: #6b7280;
+    --adc: #7c3aed;
+    --cmp: #c2790e;
+    --other: #0891b2;
+    --icsp: #b88a00;
+    --code-bg: #f8f9fa;
+    --code-fg: #1f2328;
+    --hover-overlay: rgba(0,0,0,0.03);
+    --conflict-bg: rgba(214,51,108,0.06);
+    --conflict-flash: rgba(214,51,108,0.3);
+    --conflict-bg2: rgba(214,51,108,0.15);
+    --conflict-border: rgba(214,51,108,0.12);
+    --assigned-overlay: rgba(8,145,178,0.1);
+    --rp-bg: rgba(8,145,178,0.1);
+    --analog-bg: rgba(124,58,237,0.1);
+    --icsp-bg: rgba(184,138,0,0.1);
+    --success-bg: rgba(61,139,43,0.1);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -190,9 +240,9 @@ header h1 {
 }
 
 .pin-row { transition: background 0.15s; }
-.pin-row:hover { background: rgba(255,255,255,0.03); }
+.pin-row:hover { background: var(--hover-overlay); }
 .pin-row.power { opacity: 0.5; }
-.pin-row.icsp { border-left: 3px solid #f0c040; }
+.pin-row.icsp { border-left: 3px solid var(--icsp); }
 .pin-row.assigned { background: var(--bg-pin-assigned); }
 
 .pin-num {
@@ -222,9 +272,9 @@ header h1 {
     white-space: nowrap;
 }
 
-.func-tag.rp { color: var(--accent2); background: rgba(0,173,181,0.15); }
-.func-tag.analog { color: var(--adc); background: rgba(179,127,235,0.15); }
-.func-tag.icsp { color: #f0c040; background: rgba(240,192,64,0.15); }
+.func-tag.rp { color: var(--accent2); background: var(--rp-bg); }
+.func-tag.analog { color: var(--adc); background: var(--analog-bg); }
+.func-tag.icsp { color: var(--icsp); background: var(--icsp-bg); }
 
 .assign-select {
     background: var(--bg);
@@ -278,8 +328,8 @@ header h1 {
 
 /* Code output */
 #code-output {
-    background: #0d1117;
-    color: #c9d1d9;
+    background: var(--code-bg);
+    color: var(--code-fg);
     font-family: inherit;
     font-size: 12px;
     padding: 16px;
@@ -369,7 +419,7 @@ header h1 {
 
 /* Conflict warning */
 .conflict {
-    background: rgba(233,69,96,0.15);
+    background: var(--conflict-border);
     border: 1px solid var(--accent);
     border-radius: 4px;
     padding: 8px 12px;
@@ -394,19 +444,19 @@ header h1 {
 .compile-result:empty { display: none; }
 
 .compile-result.success {
-    background: rgba(103,194,58,0.15);
+    background: var(--success-bg);
     border: 1px solid var(--spi);
     color: var(--spi);
 }
 
 .compile-result.error {
-    background: rgba(233,69,96,0.15);
+    background: var(--conflict-border);
     border: 1px solid var(--accent);
     color: var(--accent);
 }
 
 .compile-result.warning {
-    background: rgba(230,162,60,0.15);
+    background: var(--icsp-bg);
     border: 1px solid var(--uart);
     color: var(--uart);
 }
@@ -457,17 +507,17 @@ header h1 {
 }
 
 .pkg-pin.assigned {
-    background: rgba(0,173,181,0.2);
+    background: var(--assigned-overlay);
     color: var(--accent2);
 }
 
 .pkg-pin.icsp {
-    color: #f0c040;
+    color: var(--icsp);
     opacity: 1 !important;
 }
 
 .pkg-pin.icsp .pkg-pin-label { font-weight: 600; }
-.pkg-pin.icsp .pkg-pin-num { color: #f0c040; }
+.pkg-pin.icsp .pkg-pin-num { color: var(--icsp); }
 
 .pkg-pin.assigned .pkg-pin-label { font-weight: 700; }
 .pkg-pin.assigned .pkg-pin-num { color: var(--accent2); }
@@ -664,17 +714,17 @@ header h1 {
 }
 
 /* Pin conflict highlighting */
-.pin-row.conflict { border-left: 3px solid var(--accent); background: rgba(233,69,96,0.08); }
+.pin-row.conflict { border-left: 3px solid var(--accent); background: var(--conflict-bg); }
 
 .pkg-pin.conflict {
     color: var(--accent) !important;
     opacity: 1 !important;
-    background: rgba(233,69,96,0.3);
+    background: var(--conflict-bg2);
     animation: conflict-flash 0.8s ease-in-out 3;
 }
 
 @keyframes conflict-flash {
-    50% { background: rgba(233,69,96,0.6); }
+    50% { background: var(--conflict-flash); }
 }
 
 /* Code output tabs */
@@ -698,7 +748,7 @@ header h1 {
 }
 
 .code-tab.active {
-    background: #0d1117;
+    background: var(--code-bg);
     color: var(--accent2);
     border-color: var(--border);
     font-weight: 600;
@@ -710,4 +760,213 @@ header h1 {
 
 .code-tabs + #code-output {
     border-top-left-radius: 0;
+}
+
+/* Theme toggle */
+#theme-toggle {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+}
+#theme-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+
+.index-badge {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    white-space: nowrap;
+    user-select: none;
+}
+.index-badge:hover {
+    color: var(--accent2);
+    border-color: var(--accent2);
+}
+
+/* =============================================================================
+   Pinout Verification
+   ============================================================================= */
+
+.verify-btn {
+    background: transparent;
+    color: var(--accent2);
+    border: 1px solid var(--accent2);
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+.verify-btn:hover {
+    background: var(--accent2);
+    color: var(--bg);
+}
+
+.verify-panel {
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    background: var(--bg-card);
+}
+.verify-panel h2 {
+    margin: 0 0 10px 0;
+    font-size: 1rem;
+    color: var(--accent2);
+}
+
+.verify-loading {
+    color: var(--accent2);
+    padding: 20px;
+    text-align: center;
+    font-style: italic;
+}
+.verify-error {
+    color: var(--accent);
+    padding: 10px;
+}
+.verify-notes {
+    margin-bottom: 10px;
+}
+.verify-note {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Package tabs */
+.verify-pkg-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+.verify-pkg-tab {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 4px 4px 0 0;
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+.verify-pkg-tab.active {
+    color: var(--text);
+    border-bottom-color: var(--bg-card);
+    background: var(--bg-card);
+}
+.verify-score {
+    font-size: 0.75rem;
+    font-weight: bold;
+    margin-left: 4px;
+}
+.score-good { color: #67c23a; }
+.score-warn { color: #e6a23c; }
+.score-bad { color: var(--accent); }
+
+.verify-corr-badge {
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.7rem;
+    padding: 1px 5px;
+    border-radius: 8px;
+    margin-left: 4px;
+}
+
+.verify-pkg-detail.hidden { display: none; }
+
+/* Corrections list */
+.verify-corrections {
+    margin-bottom: 12px;
+    padding: 8px;
+    background: var(--conflict-bg);
+    border: 1px solid var(--conflict-border);
+    border-radius: 4px;
+}
+.verify-corrections h4 {
+    margin: 0 0 6px 0;
+    color: var(--accent);
+    font-size: 0.85rem;
+}
+.verify-corr-item {
+    font-size: 0.8rem;
+    padding: 3px 0;
+    border-bottom: 1px solid var(--border);
+}
+.verify-corr-item:last-child { border-bottom: none; }
+.verify-corr-type {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.7rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+.verify-old {
+    color: var(--accent);
+    text-decoration: line-through;
+}
+.verify-new {
+    color: #67c23a;
+    font-weight: bold;
+}
+.verify-corr-note {
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.verify-match {
+    color: #67c23a;
+    padding: 8px;
+    font-size: 0.85rem;
+}
+
+/* Verify pin table */
+.verify-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    margin-bottom: 10px;
+}
+.verify-table th {
+    background: var(--bg-pin);
+    color: var(--text-dim);
+    padding: 4px 8px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+}
+.verify-table td {
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border);
+}
+.verify-table tr.verify-ok td { color: var(--text); }
+.verify-table tr.verify-diff td { background: var(--conflict-bg); }
+.verify-table tr.verify-diff td:nth-child(2) { color: #67c23a; font-weight: bold; }
+.verify-table tr.verify-diff td:nth-child(3) { color: var(--accent); text-decoration: line-through; }
+.verify-table tr.verify-new td { background: var(--success-bg); }
+
+.verify-apply-btn {
+    background: var(--accent2);
+    color: var(--bg);
+    border: none;
+    padding: 6px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    margin-top: 8px;
+}
+.verify-apply-btn:hover {
+    opacity: 0.85;
 }

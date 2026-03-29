@@ -144,7 +144,8 @@ async function loadDevice(pkg) {
     const part = document.getElementById('part-input').value.trim().toUpperCase();
     if (!part) return;
 
-    setStatus('Loading...');
+    const isCached = cachedDevices.has(part);
+    setStatus(isCached ? 'Loading...' : 'Downloading DFP pack...');
     const url = pkg ? `/api/device/${part}?package=${encodeURIComponent(pkg)}` : `/api/device/${part}`;
 
     try {
@@ -173,6 +174,9 @@ async function loadDevice(pkg) {
             pkgSelect.style.display = 'none';
         }
 
+        // Show verify button when device is loaded
+        document.getElementById('verify-btn').style.display = '';
+
         // Clear assignments only when switching parts, not packages
         if (!pkg) {
             assignments = {};
@@ -188,6 +192,12 @@ async function loadDevice(pkg) {
 
         renderDevice();
         setStatus(`${deviceData.part_number} — ${deviceData.selected_package}`);
+
+        // Update cached device set if this was a new download
+        if (!isCached) {
+            cachedDevices.add(part);
+            populateDeviceList();
+        }
     } catch (e) {
         setStatus('Error: ' + e.message);
     }
@@ -1192,6 +1202,7 @@ document.getElementById('gen-btn').addEventListener('click', generateCode);
 document.getElementById('check-btn').addEventListener('click', compileCheck);
 document.getElementById('copy-btn').addEventListener('click', copyCode);
 document.getElementById('export-btn').addEventListener('click', exportCode);
+document.getElementById('verify-btn').addEventListener('click', verifyPinout);
 document.getElementById('pinlist-btn').addEventListener('click', exportPinList);
 document.getElementById('save-btn').addEventListener('click', saveConfig);
 document.getElementById('load-btn-file').addEventListener('click', () => {
@@ -1214,17 +1225,311 @@ for (const btn of document.querySelectorAll('.code-tab')) {
 }
 
 // Populate device list for combo box autocomplete
-fetch('/api/devices').then(r => r.json()).then(data => {
-    const dl = document.getElementById('device-list');
-    (data.devices || []).sort().forEach(d => {
-        const opt = document.createElement('option');
-        opt.value = d;
-        dl.appendChild(opt);
+/** @type {Set<string>} Devices available locally (no download needed) */
+let cachedDevices = new Set();
+
+function populateDeviceList() {
+    fetch('/api/devices').then(r => r.json()).then(data => {
+        const dl = document.getElementById('device-list');
+        dl.innerHTML = '';
+        cachedDevices = new Set(data.cached || []);
+        (data.devices || []).forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d;
+            dl.appendChild(opt);
+        });
+        updateIndexBadge(data.total, data.cached_count);
+    }).catch(() => {});
+}
+
+function updateIndexBadge(total, cached) {
+    let badge = document.getElementById('index-badge');
+    if (!badge) return;
+    if (total > 0) {
+        badge.textContent = `${total} devices (${cached} cached)`;
+        badge.title = 'Click to refresh device catalog from Microchip';
+        badge.style.display = '';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+async function refreshIndex() {
+    const badge = document.getElementById('index-badge');
+    if (badge) badge.textContent = 'Refreshing...';
+    try {
+        const resp = await fetch('/api/refresh-index', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            populateDeviceList();
+        } else {
+            if (badge) badge.textContent = 'Refresh failed';
+        }
+    } catch (e) {
+        if (badge) badge.textContent = 'Refresh failed';
+    }
+}
+
+populateDeviceList();
+
+// =============================================================================
+// Theme Toggle
+// =============================================================================
+
+/** Initialize theme from localStorage and wire toggle button. */
+function setupTheme() {
+    const saved = localStorage.getItem('config-pic-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+    const btn = document.getElementById('theme-toggle');
+    btn.textContent = saved === 'dark' ? 'Light' : 'Dark';
+    btn.addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-theme') || 'dark';
+        const next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('config-pic-theme', next);
+        btn.textContent = next === 'dark' ? 'Light' : 'Dark';
     });
-}).catch(() => {});
+}
+
+// =============================================================================
+// Pinout Verification (Claude API)
+// =============================================================================
+
+/** @type {Object|null} Last verification result */
+let verifyResult = null;
+
+/** Check if API key is configured. */
+async function checkApiKey() {
+    try {
+        const resp = await fetch('/api/api-key-status');
+        const data = await resp.json();
+        const btn = document.getElementById('verify-btn');
+        if (btn) {
+            btn.title = data.configured
+                ? `API key configured (${data.hint})`
+                : 'No API key — configure in .env';
+        }
+        return data.configured;
+    } catch { return false; }
+}
+
+/** Trigger pinout verification with a PDF upload. */
+async function verifyPinout() {
+    if (!deviceData) {
+        setStatus('Load a device first');
+        return;
+    }
+
+    // Check API key
+    const hasKey = await checkApiKey();
+
+    // Create file picker
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.pdf';
+    input.onchange = async () => {
+        const file = input.files[0];
+        if (!file) return;
+
+        const panel = document.getElementById('verify-panel');
+        const output = document.getElementById('verify-output');
+        panel.style.display = '';
+        output.innerHTML = '<div class="verify-loading">Analyzing datasheet with Claude... this may take 30–60 seconds.</div>';
+        setStatus('Verifying pinout...');
+
+        const form = new FormData();
+        form.append('pdf', file);
+        form.append('part_number', deviceData.part_number);
+        form.append('package', deviceData.selected_package);
+
+        // Pass API key from localStorage if set
+        const storedKey = localStorage.getItem('config-pic-api-key');
+        if (storedKey) form.append('api_key', storedKey);
+
+        try {
+            const resp = await fetch('/api/verify-pinout', { method: 'POST', body: form });
+            if (!resp.ok) {
+                const err = await resp.json();
+                output.innerHTML = `<div class="verify-error">${err.detail || 'Verification failed'}</div>`;
+                setStatus('Verification failed');
+                return;
+            }
+            verifyResult = await resp.json();
+            renderVerifyResult(verifyResult);
+            setStatus('Verification complete');
+        } catch (e) {
+            output.innerHTML = `<div class="verify-error">Error: ${e.message}</div>`;
+            setStatus('Verification error');
+        }
+    };
+    input.click();
+}
+
+/** Render the verification diff result. */
+function renderVerifyResult(result) {
+    const output = document.getElementById('verify-output');
+    if (!result || !result.packages || Object.keys(result.packages).length === 0) {
+        output.innerHTML = '<div class="verify-error">No package data found in datasheet.</div>';
+        return;
+    }
+
+    let html = '';
+
+    // Notes
+    if (result.notes && result.notes.length) {
+        html += '<div class="verify-notes">';
+        result.notes.forEach(n => { html += `<div class="verify-note">${escapeHtml(n)}</div>`; });
+        html += '</div>';
+    }
+
+    // Package tabs
+    const pkgNames = Object.keys(result.packages);
+    html += '<div class="verify-pkg-tabs">';
+    pkgNames.forEach((name, i) => {
+        const pkg = result.packages[name];
+        const corrCount = (pkg.corrections || []).length;
+        const scoreClass = pkg.match_score >= 0.95 ? 'score-good' : pkg.match_score >= 0.8 ? 'score-warn' : 'score-bad';
+        const badge = corrCount > 0 ? ` <span class="verify-corr-badge">${corrCount}</span>` : '';
+        html += `<button class="verify-pkg-tab${i === 0 ? ' active' : ''}" data-pkg="${name}">`;
+        html += `${escapeHtml(name)} (${pkg.pin_count}p)`;
+        html += ` <span class="verify-score ${scoreClass}">${Math.round(pkg.match_score * 100)}%</span>`;
+        html += `${badge}</button>`;
+    });
+    html += '</div>';
+
+    // Package details (one div per package)
+    pkgNames.forEach((name, i) => {
+        const pkg = result.packages[name];
+        html += `<div class="verify-pkg-detail${i === 0 ? '' : ' hidden'}" data-pkg="${name}">`;
+
+        // Corrections section
+        if (pkg.corrections && pkg.corrections.length > 0) {
+            html += '<div class="verify-corrections">';
+            html += `<h4>Corrections (${pkg.corrections.length})</h4>`;
+            pkg.corrections.forEach(c => {
+                const typeLabel = {
+                    'wrong_pad': 'Wrong Pad',
+                    'missing_functions': 'Missing Functions',
+                    'extra_functions': 'Extra Functions',
+                    'missing_pin': 'Missing Pin',
+                    'extra_pin': 'Extra Pin',
+                }[c.correction_type] || c.correction_type;
+                html += `<div class="verify-corr-item">`;
+                html += `<span class="verify-corr-type">${typeLabel}</span> `;
+                html += `Pin ${c.pin_position}: `;
+                if (c.current_pad) html += `<span class="verify-old">${escapeHtml(c.current_pad)}</span>`;
+                if (c.current_pad && c.datasheet_pad) html += ' → ';
+                if (c.datasheet_pad) html += `<span class="verify-new">${escapeHtml(c.datasheet_pad)}</span>`;
+                if (c.note) html += ` <span class="verify-corr-note">${escapeHtml(c.note)}</span>`;
+                html += `</div>`;
+            });
+            html += '</div>';
+        } else {
+            html += '<div class="verify-match">All pins match current data.</div>';
+        }
+
+        // Full pin table
+        html += '<table class="verify-table"><thead><tr>';
+        html += '<th>Pin</th><th>Datasheet</th><th>Current</th><th>Status</th>';
+        html += '</tr></thead><tbody>';
+
+        const currentPins = {};
+        if (deviceData && deviceData.pins) {
+            deviceData.pins.forEach(p => { currentPins[p.position] = p; });
+        }
+
+        const sortedPositions = Object.keys(pkg.pins).map(Number).sort((a, b) => a - b);
+        for (const pos of sortedPositions) {
+            const dsPad = pkg.pins[pos];
+            const cur = currentPins[pos];
+            const curPad = cur ? (cur.pad_name || cur.pad) : '—';
+            const match = cur && normalizePad(dsPad) === normalizePad(curPad);
+            const statusClass = match ? 'verify-ok' : cur ? 'verify-diff' : 'verify-new';
+            const statusText = match ? '✓' : cur ? '≠' : 'NEW';
+
+            html += `<tr class="${statusClass}">`;
+            html += `<td>${pos}</td>`;
+            html += `<td>${escapeHtml(dsPad)}</td>`;
+            html += `<td>${escapeHtml(curPad)}</td>`;
+            html += `<td>${statusText}</td>`;
+            html += `</tr>`;
+        }
+        html += '</tbody></table>';
+
+        // Apply button for this package
+        html += `<button class="verify-apply-btn" data-pkg="${name}">Apply "${escapeHtml(name)}" as Overlay</button>`;
+        html += '</div>';
+    });
+
+    output.innerHTML = html;
+
+    // Wire package tab switching
+    output.querySelectorAll('.verify-pkg-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            output.querySelectorAll('.verify-pkg-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            output.querySelectorAll('.verify-pkg-detail').forEach(d => d.classList.add('hidden'));
+            output.querySelector(`.verify-pkg-detail[data-pkg="${tab.dataset.pkg}"]`)?.classList.remove('hidden');
+        });
+    });
+
+    // Wire apply buttons
+    output.querySelectorAll('.verify-apply-btn').forEach(btn => {
+        btn.addEventListener('click', () => applyVerifiedOverlay(btn.dataset.pkg));
+    });
+}
+
+/** Normalize pad name for comparison (strip trailing _N suffixes). */
+function normalizePad(name) {
+    return (name || '').toUpperCase().replace(/_\d+$/, '');
+}
+
+/** Escape HTML special characters. */
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+/** Apply a verified package overlay to the device. */
+async function applyVerifiedOverlay(pkgName) {
+    if (!verifyResult || !verifyResult.packages[pkgName]) return;
+
+    const pkg = verifyResult.packages[pkgName];
+    const payload = {
+        part_number: verifyResult.part_number,
+        packages: {
+            [pkgName]: {
+                pin_count: pkg.pin_count,
+                pins: pkg.pins,
+                pin_functions: pkg.pin_functions || {},
+            }
+        }
+    };
+
+    try {
+        const resp = await fetch('/api/apply-overlay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            setStatus(`Overlay saved for ${pkgName}. Reloading...`);
+            // Reload device to pick up new overlay
+            await loadDevice(pkgName);
+        } else {
+            setStatus('Failed to save overlay');
+        }
+    } catch (e) {
+        setStatus('Error saving overlay: ' + e.message);
+    }
+}
 
 // Initialize UI and auto-load default device
+setupTheme();
 checkCompiler();
+checkApiKey();
 setupOscUI();
 setupFuseUI();
 if (document.getElementById('part-input').value) {

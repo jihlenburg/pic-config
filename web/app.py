@@ -13,12 +13,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from parser.dfp_manager import load_device, list_cached_devices
+from parser.dfp_manager import load_device, list_cached_devices, list_all_known_devices
+from parser.pack_index import get_pack_index
+from parser.pinout_verifier import verify_pinout, save_overlay, _get_api_key
 from codegen.generate import generate_c_code, generate_c_files, PinConfig, PinAssignment
 from codegen.oscillator import OscConfig
 from codegen.fuses import FuseConfig
@@ -48,7 +50,52 @@ async def index():
 
 @app.get("/api/devices")
 async def api_list_devices():
-    return {"devices": list_cached_devices()}
+    """List all known devices (cached + pack index catalog)."""
+    cached = set(list_cached_devices())
+    all_devs = list_all_known_devices()
+    return {
+        "devices": all_devs,
+        "cached": sorted(cached),
+        "total": len(all_devs),
+        "cached_count": len(cached),
+    }
+
+
+@app.post("/api/refresh-index")
+async def api_refresh_index():
+    """Force-refresh the pack index from Microchip servers."""
+    try:
+        index = get_pack_index(force_refresh=True)
+        return {
+            "success": True,
+            "device_count": len(index.devices),
+            "pack_count": len(index.packs),
+            "age_hours": round(index.age_hours, 1),
+        }
+    except Exception as e:
+        raise HTTPException(502, f"Failed to refresh pack index: {e}")
+
+
+@app.get("/api/index-status")
+async def api_index_status():
+    """Return the current pack index status without fetching."""
+    try:
+        index = get_pack_index()
+        return {
+            "available": True,
+            "device_count": len(index.devices),
+            "pack_count": len(index.packs),
+            "age_hours": round(index.age_hours, 1),
+            "is_stale": index.is_stale,
+        }
+    except Exception:
+        return {
+            "available": False,
+            "device_count": 0,
+            "pack_count": 0,
+            "age_hours": None,
+            "is_stale": True,
+        }
 
 
 @app.get("/api/device/{part_number}")
@@ -270,3 +317,103 @@ async def api_compile_check(req: CompileCheckRequest):
                 "errors": stderr if stderr else stdout,
                 "warnings": "",
             }
+
+
+# =============================================================================
+# Pinout Verification (Claude API)
+# =============================================================================
+
+@app.post("/api/verify-pinout")
+async def api_verify_pinout(
+    pdf: UploadFile = File(...),
+    part_number: str = Form(...),
+    package: str = Form(None),
+    api_key: str = Form(None),
+):
+    """
+    Verify pinout data against a datasheet PDF using Claude.
+
+    Accepts a multipart form with the PDF file, part number, and optional API key.
+    Returns structured diff with proposed corrections.
+    """
+    # Resolve API key: form param > .env > error
+    key = api_key if api_key else _get_api_key()
+    if not key:
+        raise HTTPException(
+            400,
+            "No API key configured. Set ANTHROPIC_API_KEY in .env or provide via settings.",
+        )
+
+    # Load current device data
+    device = load_device(part_number)
+    if device is None:
+        raise HTTPException(404, f"Device {part_number} not found")
+
+    pkg_name = package or device.default_pinout
+    resolved_pins = device.resolve_pins(pkg_name)
+    pinout = device.get_pinout(pkg_name)
+
+    device_dict = {
+        "part_number": device.part_number,
+        "selected_package": pkg_name,
+        "packages": {
+            name: {"pin_count": po.pin_count, "source": po.source}
+            for name, po in device.pinouts.items()
+        },
+        "pin_count": pinout.pin_count,
+        "pins": resolved_pins,
+    }
+
+    # Read PDF
+    pdf_bytes = await pdf.read()
+    if len(pdf_bytes) < 1000:
+        raise HTTPException(400, "PDF file appears too small or empty")
+
+    try:
+        result = verify_pinout(pdf_bytes, device_dict, api_key=key)
+        return result.to_dict()
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Verification failed: {e}")
+
+
+class ApplyOverlayRequest(BaseModel):
+    part_number: str
+    packages: dict  # package_name -> {pin_count, pins: {pos: pad}}
+
+
+@app.post("/api/apply-overlay")
+async def api_apply_overlay(req: ApplyOverlayRequest):
+    """Save verified pinout corrections as an overlay JSON file."""
+    from parser.pinout_verifier import VerifyResult, PackageResult
+
+    # Build a VerifyResult from the request data
+    vr = VerifyResult(part_number=req.part_number)
+    for pkg_name, pkg_data in req.packages.items():
+        pins = {}
+        for pos_str, pad in pkg_data.get("pins", {}).items():
+            try:
+                pins[int(pos_str)] = pad
+            except (ValueError, TypeError):
+                continue
+        vr.packages[pkg_name] = PackageResult(
+            package_name=pkg_name,
+            pin_count=pkg_data.get("pin_count", len(pins)),
+            pins=pins,
+            pin_functions=pkg_data.get("pin_functions", {}),
+        )
+
+    path = save_overlay(req.part_number, vr)
+    return {"success": True, "path": str(path)}
+
+
+@app.get("/api/api-key-status")
+async def api_key_status():
+    """Check if an API key is configured (without revealing it)."""
+    key = _get_api_key()
+    if key:
+        # Show just the last 4 characters
+        masked = "..." + key[-4:]
+        return {"configured": True, "hint": masked}
+    return {"configured": False, "hint": None}
